@@ -6,6 +6,8 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 from tensorflow.keras.datasets import mnist
 import random
+from skimage.feature import hog
+from PIL import Image
 
 
 import joblib
@@ -22,6 +24,14 @@ def plot_keypoints(images, keypoints_list, num_images=4):
         plt.axis('off')
     plt.show()
     st.pyplot(plt)
+    
+def harris_corner_detector(image, block_size=2, ksize=3, k=0.04):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = np.float32(gray)
+    dst = cv2.cornerHarris(gray, block_size, ksize, k)
+    dst = cv2.dilate(dst, None)
+    image[dst > 0.01 * dst.max()] = [0, 0, 255]
+    return image
 
 # Fonction pour extraire les caractéristiques SIFT
 def extract_sift_features(image):
@@ -45,7 +55,48 @@ def predict_new_image(image , clf):
     padded =np.pad(flat, (0, 3200 - len(flat)), 'constant') 
     return clf.predict([padded])
 
+
+def hu_moments(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    moments = cv2.moments(gray)
+    hu_moments = cv2.HuMoments(moments).flatten()
+    return hu_moments
+
+def hog_features(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    features, hog_image = hog(gray, pixels_per_cell=(8, 8),
+                              cells_per_block=(2, 2), visualize=True,
+                              block_norm='L2-Hys')
+    return features, hog_image
+
+
+def feature_matching(img1, img2):
+    
+    img1_array = np.array(img1)
+    img2_array = np.array(img2)
+    
+    img1_gray = cv2.cvtColor(np.array(img1_array), cv2.COLOR_RGB2GRAY)
+    img2_gray = cv2.cvtColor(np.array(img2_array), cv2.COLOR_RGB2GRAY)
+    sift = cv2.SIFT_create()
+    keypoints1, descriptors1 = sift.detectAndCompute(img1_gray, None)
+    keypoints2, descriptors2 = sift.detectAndCompute(img2_gray, None)
+
+    bf = cv2.BFMatcher()
+    matches = bf.knnMatch(descriptors1, descriptors2, k=2)
+
+    # Appliquer le ratio test de David Lowe
+    good_matches = []
+    for m, n in matches:
+        if m.distance < 0.75 * n.distance:
+            good_matches.append(m)
+
+    # Dessiner les matches
+    img_matches = cv2.drawMatches(img1_array, keypoints1, img2_array, keypoints2, good_matches, None, flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+    return img_matches
+
 # Interface Streamlit
+(X_train, y_train), (X_test, y_test) = mnist.load_data()
+
 st.title("Reconnaissance d'Écriture Manuscrite")
 
 st.sidebar.title("Navigation")
@@ -82,7 +133,63 @@ if option == "Accueil":
 elif option == "Extraction de Caractéristiques Manuelles":
     st.header("Extraction de Caractéristiques Manuelles")
     st.write("Présentation des différentes méthodes d'extraction de caractéristiques manuelles.")
-    # Ajoutez ici le code pour afficher les caractéristiques extraites manuellement
+    st.image('HOC.png')
+    
+    st.subheader('Extraction en temp Reel')
+    
+    method = st.selectbox("Méthode", ["SIFT", "Harris Corner Detector", "Moments de Hu", "HOG"])
+
+    uploaded_imag = st.file_uploader("Téléchargez une image...", type=["png", "jpg", "jpeg"])
+
+    if uploaded_imag is not None:
+        file_bytes = np.asarray(bytearray(uploaded_imag.read()), dtype=np.uint8)
+        img = cv2.imdecode(file_bytes, 1)
+
+        if method == "SIFT":
+            keypoints, _ = extract_sift_features(img)
+            img_with_keypoints = cv2.drawKeypoints(img, keypoints, None)
+            st.image(img_with_keypoints, caption='Image avec points clés SIFT', use_column_width=True)
+        elif method == "Harris Corner Detector":
+            img_with_corners = harris_corner_detector(img)
+            st.image(img_with_corners, caption='Image avec Harris Corners', use_column_width=True)
+        elif method == "Moments de Hu":
+            hu_features = hu_moments(img)
+            st.write("Moments de Hu:", hu_features)
+        elif method == "HOG":
+            
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            hog_features, hog_image = hog(gray, block_norm='L2-Hys', pixels_per_cell=(8, 8), visualize=True)
+            # Normalize hog_image
+            hog_image = (hog_image - hog_image.min()) / (hog_image.max() - hog_image.min())
+        
+            st.image(hog_image, caption='Image avec HOG', use_column_width=True)
+            st.write("Caractéristiques HOG : ", hog_features)
+            
+            
+    st.subheader("Sélectionnez deux images du dataset MNIST pour le feature matching :")
+    uploaded_img1 = st.file_uploader("Téléchargez une image 1...", type=["png", "jpg", "jpeg"])
+    if uploaded_img1 is not None:
+        img1 = Image.open(uploaded_img1)
+        st.image(img1, caption="image 1", use_column_width=True)
+
+    uploaded_img2 = st.file_uploader("Téléchargez une image 2...", type=["png", "jpg", "jpeg"])
+    if uploaded_img2 is not None:
+        img2 = Image.open(uploaded_img2)
+        st.image(img2, caption="image 2", use_column_width=True)
+    
+    # random_indices = random.sample(range(len(X_test)), 10)
+    # idx1 = st.selectbox("Index de la première image :", random_indices)
+    # idx2 = st.selectbox("Index de la deuxième image :", random_indices)
+
+    if st.button("Faire le Feature Matching"):
+        img1 = Image.open(uploaded_img1)
+        img2 = Image.open(uploaded_img2)
+        matched_img = feature_matching(img1, img2)
+        
+        # img11 = cv2.cvtColor(img1, cv2.COLOR_GRAY2BGR)
+        # img22 = cv2.cvtColor(img2, cv2.COLOR_GRAY2BGR)
+        # matched_img = feature_matching(img1, img2)
+        st.image(matched_img, caption='Feature Matching entre deux images', use_column_width=True)
 
 elif option == "Modèles de Machine Learning":
     st.header("Modèles de Machine Learning Classiques avec Feature Extraction")
@@ -192,6 +299,8 @@ elif option == "Predictions et Demo":
     # Affichage des classes de MNIST
     st.write("Classes du dataset MNIST :")
     classes = list(range(10))  # Les classes vont de 0 à 9 pour MNIST
+    st.write('Matrice de Performance')
+    st.image('matrix.png', caption='Matrice de Confusions', use_column_width=True)
     st.write(classes)
     
     st.write("Téléchargez votre propre image manuscrite pour la prédiction :")
