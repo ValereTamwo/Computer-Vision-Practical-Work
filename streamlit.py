@@ -5,7 +5,7 @@ from PIL import Image
 import joblib
 
 # Load the trained model
-model = joblib.load('digit_recognizer_model_svm.pkl')
+model = joblib.load('model/digit_recognizer_model_svm.pkl')
 
 
 # Function to extract SIFT features from input image
